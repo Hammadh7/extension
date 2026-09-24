@@ -1,0 +1,70 @@
+name: Download trending videos
+
+on:
+  workflow_dispatch:
+    inputs:
+      hashtags:
+        description: "comma-separated, bina #"
+        required: false
+        default: "wholesome,drake,manga,sukuna,chainsawman"
+      min_likes:
+        description: "minimum likes"
+        required: false
+        default: "1000000"
+      min_views:
+        description: "minimum views"
+        required: false
+        default: "10000000"
+      download:
+        description: "true = files utaaro, false = sirf metadata"
+        required: false
+        default: "true"
+
+jobs:
+  videos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+      - run: npm ci || npm install
+      - run: npx playwright install --with-deps chromium
+      - name: Install yt-dlp
+        run: |
+          sudo curl -sL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp
+          sudo chmod a+rx /usr/local/bin/yt-dlp
+          yt-dlp --version
+
+      - name: Scrape + download
+        env:
+          HASHTAGS:  ${{ github.event.inputs.hashtags }}
+          MIN_LIKES: ${{ github.event.inputs.min_likes }}
+          MIN_VIEWS: ${{ github.event.inputs.min_views }}
+          DOWNLOAD:  ${{ github.event.inputs.download }}
+        run: npx tsx src/videos.ts
+
+      # Videos artifact me jaati hain, repo me nahi — public repo me mp4 nahi daalne.
+      - name: Upload videos
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-videos-${{ github.run_id }}
+          path: data/videos/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Upload metadata
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-metadata-${{ github.run_id }}
+          path: |
+            data/*.json
+            data/*.csv
+          if-no-files-found: warn
+          retention-days: 90

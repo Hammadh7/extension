@@ -4,3 +4,7 @@ node_modules/
 *.log
 playwright-report/
 test-results/
+
+# videos artifact me jaati hain, repo me nahi
+data/videos/
+*.mp4
