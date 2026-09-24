@@ -20,11 +20,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { execFile } from "node:child_process";
-import { promisify } from "node:util";
-import { chromium, type Browser, type Page } from "playwright";
-
-const execFileAsync = promisify(execFile);
+import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 
 const HASHTAGS = (process.env.HASHTAGS || "wholesome,drake,manga,sukuna,chainsawman")
   .split(",").map((s) => s.trim().replace(/^#/, "")).filter(Boolean);
@@ -45,6 +41,7 @@ interface Vid {
   likes: number; views: number; comments: number; shares: number;
   desc: string; music: string | null; music_id: string | null;
   duration: number | null; created: string | null;
+  play_addr: string | null;
   passes: boolean; downloaded?: string;
 }
 
@@ -81,6 +78,7 @@ function toVid(hashtag: string, it: any): Vid {
     music: it.music?.title ?? null,
     music_id: it.music?.id ?? null,
     duration: it.video?.duration ?? null,
+    play_addr: it.video?.playAddr || it.video?.downloadAddr || null,
     created: it.createTime ? new Date(num(it.createTime) * 1000).toISOString() : null,
     passes: likes >= MIN_LIKES || views >= MIN_VIEWS,
   };
@@ -125,17 +123,31 @@ async function scrapeTag(page: Page, tag: string): Promise<Vid[]> {
   return vids;
 }
 
-async function download(v: Vid): Promise<string | null> {
+/**
+ * Download seedha CDN se, usi browser context se jisne page khola tha.
+ *
+ * yt-dlp yahan har baar fail hua (`Unexpected response from webpage request`)
+ * kyunki wo video page dobara fetch karta hai aur TikTok datacenter IP se wo
+ * request block kar deta hai. Item JSON me playAddr pehle se maujood hai, aur
+ * ctx.request browser ki cookies aur TLS fingerprint reuse karta hai.
+ */
+async function download(ctx: BrowserContext, v: Vid): Promise<string | null> {
+  if (!v.play_addr) return null;
   const out = path.join(VIDEO_DIR, `${v.hashtag}__${v.id}.mp4`);
   if (fs.existsSync(out)) return out;
   try {
-    await execFileAsync("yt-dlp", [
-      v.url, "-o", out, "--no-warnings", "--no-playlist",
-      "-f", "mp4/best", "--retries", "3", "--socket-timeout", "30",
-    ], { timeout: 180_000, maxBuffer: 16 * 1024 * 1024 });
-    return fs.existsSync(out) ? out : null;
+    const resp = await ctx.request.get(v.play_addr, {
+      headers: { referer: "https://www.tiktok.com/", "user-agent": UA },
+      timeout: 120_000,
+    });
+    if (!resp.ok()) { console.log(`    ✗ ${v.id}: HTTP ${resp.status()}`); return null; }
+    const buf = await resp.body();
+    // CDN kabhi-kabhi khaali ya error page bhej deta hai
+    if (buf.length < 10_000) { console.log(`    ✗ ${v.id}: sirf ${buf.length} bytes`); return null; }
+    fs.writeFileSync(out, new Uint8Array(buf));
+    return out;
   } catch (e: any) {
-    console.log(`    ✗ download fail ${v.id}: ${String(e?.stderr ?? e?.message ?? e).slice(0, 110)}`);
+    console.log(`    ✗ ${v.id}: ${String(e?.message ?? e).slice(0, 100)}`);
     return null;
   }
 }
@@ -163,7 +175,19 @@ async function main() {
       });
       const page = await ctx.newPage();
       try {
-        all.push(...(await scrapeTag(page, tag)));
+        const got = await scrapeTag(page, tag);
+        all.push(...got);
+        // Context abhi zinda hai aur CDN URLs jaldi expire hote hain,
+        // isliye is tag ke winners yahin utaar lo.
+        if (DOWNLOAD) {
+          const win = got.filter((v) => v.passes);
+          let ok = 0;
+          for (const v of win) {
+            const p = await download(ctx, v);
+            if (p) { v.downloaded = p; ok++; }
+          }
+          if (win.length) console.log(`  [#${tag}] downloaded ${ok}/${win.length}`);
+        }
       } catch (e: any) {
         console.log(`  [#${tag}] FAIL: ${String(e?.message ?? e).slice(0, 140)}`);
       } finally {
@@ -184,22 +208,16 @@ async function main() {
   console.log(`\n  kul unique videos: ${vids.length}`);
   console.log(`  bar paar karne wale: ${winners.length}`);
 
-  if (DOWNLOAD && winners.length) {
-    console.log(`\n  download shuru (${winners.length})`);
-    let ok = 0;
-    for (const v of winners) {
-      const p = await download(v);
-      if (p) { v.downloaded = p; ok++; }
-    }
-    console.log(`  downloaded: ${ok}/${winners.length}`);
-  } else if (!DOWNLOAD) {
+  if (DOWNLOAD) {
+    console.log(`  downloaded kul: ${vids.filter((v) => v.downloaded).length}/${winners.length}`);
+  } else {
     console.log("  DOWNLOAD=false — sirf metadata");
   }
 
   const stamp = new Date().toISOString().slice(0, 10);
   fs.writeFileSync(path.join(OUT_DIR, `${stamp}-videos.json`), JSON.stringify(vids, null, 2));
   const COLS: (keyof Vid)[] = ["hashtag","id","url","author","likes","views","comments","shares",
-                                "music","music_id","duration","created","passes","downloaded","desc"];
+                                "music","music_id","duration","created","passes","downloaded","play_addr","desc"];
   fs.writeFileSync(path.join(OUT_DIR, `${stamp}-videos.csv`),
     [COLS.join(","), ...vids.map((v) => COLS.map((c) => esc(v[c])).join(","))].join("\n") + "\n");
 
