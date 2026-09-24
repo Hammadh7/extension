@@ -53,6 +53,8 @@ jobs:
         env:
           COUNTRY: ${{ github.event.inputs.country || 'US' }}
           PERIOD: ${{ github.event.inputs.period || '7' }}
+          # TikTok Business session. Repo me nahi — Settings > Secrets me set karo.
+          TIKTOK_COOKIES: ${{ secrets.TIKTOK_COOKIES }}
         run: npm run scrape
 
       # Artifact hamesha rakho — commit fail ho to bhi data haath me rahe.

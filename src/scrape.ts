@@ -19,6 +19,60 @@ import fs from "node:fs";
 import path from "node:path";
 import { chromium, type Browser, type Page } from "playwright";
 
+/**
+ * Creative Center ka trends API logged-out session ko `code 40000 "invalid user"`
+ * deta hai — US runner par bhi. Isliye ek TikTok Business session ki cookies
+ * chahiye. Wo GitHub Secret se aati hain, repo me kabhi nahi.
+ *
+ * TIKTOK_COOKIES do shakal me chalta hai:
+ *   - JSON array  : [{"name":"sessionid","value":"...","domain":".tiktok.com",...}]
+ *   - Netscape    : cookies.txt wali tab-separated lines
+ */
+function parseCookies(raw: string | undefined): any[] {
+  if (!raw || !raw.trim()) return [];
+  const txt = raw.trim();
+  if (txt.startsWith("[")) {
+    try {
+      return JSON.parse(txt)
+        .filter((c: any) => c?.name && c?.value)
+        .map((c: any) => ({
+          name: c.name,
+          value: c.value,
+          domain: c.domain || ".tiktok.com",
+          path: c.path || "/",
+          httpOnly: !!c.httpOnly,
+          secure: c.secure !== false,
+          // session cookies ke liye expiry chhod do
+          ...(typeof c.expirationDate === "number"
+            ? { expires: Math.floor(c.expirationDate) }
+            : typeof c.expires === "number" && c.expires > 0
+              ? { expires: Math.floor(c.expires) }
+              : {}),
+        }));
+    } catch (e: any) {
+      console.error(`  TIKTOK_COOKIES JSON parse fail: ${String(e?.message ?? e).slice(0, 120)}`);
+      return [];
+    }
+  }
+  // Netscape format
+  const out: any[] = [];
+  for (const line of txt.split("\n")) {
+    if (!line.trim() || line.trim().startsWith("#")) continue;
+    const p = line.split("\t");
+    if (p.length < 7) continue;
+    const [domain, , cpath, secure, expiry, name, value] = p;
+    out.push({
+      name: name.trim(),
+      value: value.trim(),
+      domain: domain.trim(),
+      path: cpath.trim() || "/",
+      secure: secure.trim().toUpperCase() === "TRUE",
+      ...(Number(expiry) > 0 ? { expires: Number(expiry) } : {}),
+    });
+  }
+  return out;
+}
+
 const COUNTRY = process.env.COUNTRY || "US";
 const PERIOD = process.env.PERIOD || "7";
 const OUT_DIR = process.env.OUT_DIR || "data";
@@ -132,6 +186,19 @@ async function main() {
         "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
       viewport: { width: 1440, height: 900 },
     });
+
+    const cookies = parseCookies(process.env.TIKTOK_COOKIES);
+    if (cookies.length) {
+      await ctx.addCookies(cookies);
+      const names = cookies.map((c) => c.name);
+      console.log(`  ${cookies.length} cookies inject ki: ${names.slice(0, 8).join(", ")}${names.length > 8 ? " ..." : ""}`);
+      if (!names.includes("sessionid")) {
+        console.warn("  ⚠️  sessionid cookie nahi hai — login shayad na chale");
+      }
+    } else {
+      console.warn("  ⚠️  TIKTOK_COOKIES set nahi — logged-out chal raha hai, 'invalid user' aane ki poori sambhavna hai");
+    }
+
     for (const t of TARGETS) {
       const page = await ctx.newPage();
       try {
