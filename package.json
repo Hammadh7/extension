@@ -1,0 +1,17 @@
+{
+  "name": "tiktok-trend-radar",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "TikTok Creative Center trend scraper. Runs on a GitHub Actions US runner, which sidesteps the India geo-block.",
+  "scripts": {
+    "scrape": "tsx src/scrape.ts"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "playwright": "^1.63.0",
+    "tsx": "^4.23.15"
+  }
+}

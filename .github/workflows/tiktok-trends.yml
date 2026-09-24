@@ -1,0 +1,80 @@
+name: TikTok trends
+
+# Ye job US runner par chalti hai. TikTok India me blocked hai, isliye scraping
+# yahan hoti hai, laptop par nahi. Public repo par Actions minutes unlimited hain.
+
+on:
+  schedule:
+    # roz 06:00 UTC = 11:30 IST
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+    inputs:
+      country:
+        description: "country_code (US, GB, ID, BR ...)"
+        required: false
+        default: "US"
+      period:
+        description: "window in days (7, 30, 120)"
+        required: false
+        default: "7"
+
+concurrency:
+  group: tiktok-trends-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+
+      - name: Install deps
+        run: npm ci || npm install
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Confirm runner is NOT in India
+        run: |
+          echo "runner exit IP:"
+          curl -s --max-time 15 https://ipinfo.io/json | head -c 400 || true
+          echo
+
+      - name: Scrape
+        env:
+          COUNTRY: ${{ github.event.inputs.country || 'US' }}
+          PERIOD: ${{ github.event.inputs.period || '7' }}
+        run: npm run scrape
+
+      # Artifact hamesha rakho — commit fail ho to bhi data haath me rahe.
+      - name: Upload artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: tiktok-trends-${{ github.run_id }}
+          path: data/
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Commit results
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --cached --quiet; then
+            echo "kuch naya nahi, commit skip"
+          else
+            git commit -m "data: tiktok trends $(date -u +%Y-%m-%d)"
+            # koi doosra run beech me push kar chuka ho to rebase karke bhejo
+            git pull --rebase --autostash origin "${GITHUB_REF_NAME}" || true
+            git push origin "HEAD:${GITHUB_REF_NAME}"
+          fi
